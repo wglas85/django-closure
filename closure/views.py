@@ -8,6 +8,8 @@ import logging
 import io
 import json
 import os
+import fcntl
+from hashlib import sha256
 
 log = logging.getLogger(__name__)
 
@@ -29,46 +31,44 @@ def load_closure_config():
     with io.open(absfile) as fh:
         return os.path.dirname(absfile),json.load(fh)
     
-base_modules = []
-'''
-  A list of module URLs, which are known incarnations of google closure's
-  ``base.js`` to be included in debug HTML files.
-'''
+def lock_closure_config(exclusive):
 
-base_module = None
-'''
-  The first module URL, which is a known incarnation of google closure's
-  ``base.js`` to be included in debug HTML files.
-'''
+    configfile = getattr(settings,"CLOSURE_CONFIG","closure-config.json")
+    
+    absfile = finders.find(configfile)
+    
+    fh = io.open(absfile+".lock",mode="w")
+    
+    try:
+        fcntl.lockf(fh,fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+    except:
+        fh.close()
+        raise
+    
+    return fh
 
-entry_points = []
-'''
-  A list of module URLs, which are providing the configured ``closure_entry_point``
-  module to be included in debug HTML files.
-'''
+def open_closure_cache(mode):
 
-entry_point = None
-'''
-  The first module URLs, which is providing the configured ``closure_entry_point``
-  module to be included in debug HTML files.
-'''
+    configfile = getattr(settings,"CLOSURE_CONFIG","closure-config.json")
+    
+    absfile = finders.find(configfile)
+    
+    return io.open(absfile+".cache",mode=mode)
 
-module_files = {}
-'''
-  A map from moduel URLs to tuples with the list of provided modules first
-  and required modules second.
-'''
+def get_main_js_urls():
+        
+    with lock_closure_config(True):
+    
+        with open_closure_cache("r") as inp:
 
-main_js_urls = []
-'''
-  A list of main javascript URLs to be included into debug HTML files.
-'''
+            state = json.load(inp)
+            return state["main_js_urls"]
 
 def closure_paths():
     '''
     Register a view under ``/closure/paths.js``, which return a closure
     dependency file consisting of ``goog.addDependency()`` calls representing
-    the dependencies found in the javascript files refernced by the closure-util
+    the dependencies found in the javascript files referenced by the closure-util
     JSON config in the section ``lib``.
     
     Calling this method also fills the module variables ``base_modules``, ``base_module``,
@@ -81,87 +81,152 @@ def closure_paths():
     if not settings.DEBUG:
         return []
     
-    rootdir,config = load_closure_config()
+    with lock_closure_config(True):
     
-    libs = config["lib"]
-    compile_opt = config.get("compile")
+        try:
+            with open_closure_cache("r") as inp:
+                oldstate = json.load(inp)
+        except:
+            oldstate = None
     
-    entry_point_module = compile_opt.get("closure_entry_point") if compile_opt else None
+        old_module_files = None if oldstate is None else oldstate.get("module_urls")
+        old_base_modules = None if oldstate is None else oldstate.get("base_modules")
     
-    rootpath = Path(rootdir)
-    
-    for libfile in libs + ["node_modules/closure-util/.deps/library/*/closure/**/*.js"]:
+        base_modules = []
+        entry_points = []
+        module_files = {}
+
+        rootdir,config = load_closure_config()
         
-        log.info("Scanning javascript files in [%s] under [%s]."%(libfile,rootpath))
+        libs = config["lib"]
+        compile_opt = config.get("compile")
         
-        for file in rootpath.glob(libfile):
-            with file.open(encoding='utf-8') as fh:
-                
+        entry_point_module = compile_opt.get("closure_entry_point") if compile_opt else None
+        
+        rootpath = Path(rootdir)
+        
+        for libfile in libs + ["node_modules/closure-util/.deps/library/*/closure/goog/base.js"]:
+            
+            log.info("Scanning javascript files in [%s] under [%s]."%(libfile,rootpath))
+            
+            for file in rootpath.glob(libfile):
+
+                mtime = file.stat().st_mtime
                 relpath = file.relative_to(rootpath)
-                
                 my_url = settings.STATIC_URL + str(relpath)
 
-                if not my_url in module_files:
+                old_state = None if old_module_files is None else old_module_files.get(my_url)
+
+                if old_state and old_state.get("mtime") == mtime:
                     
-                    try:
-                        modules,requirements,isbase = analyze_modules(fh.read())
+                    module_files[my_url] = old_state
+                    isbase = old_base_modules and my_url in old_base_modules
+                    modules = old_state.get("modules")
+
+                    if isbase:
                         
-                        if isbase:
-                            
-                            if len(base_modules) == 0:
-                                log.info("closure's base.js found under [%s]."%my_url)
-                                base_module = my_url
-                            else:
-                                log.warn("Additional closure's base.js found under [%s], this file will be ignored."%my_url)
-                            
-                            base_modules.append(my_url)
+                        if len(base_modules) == 0:
+                            log.info("closure's base.js found under [%s]."%my_url)
+                        else:
+                            log.warn("Additional closure's base.js found under [%s], this file will be ignored."%my_url)
                         
-                        if entry_point_module and entry_point_module in modules:
-                            if len(entry_points) == 0:
-                                log.info("Entry point [%s] found under [%s]."%(entry_point_module,my_url))
-                                entry_point = my_url
-                            else:
-                                log.warn("Entry point [%s] also found under [%s], this file will be ignored."%(entry_point_module,my_url))
-                            
-                            entry_points.append(my_url)
-                            
-                        module_files[my_url] = (modules,requirements)
+                        base_modules.append(my_url)
                     
-                    except Exception as e:
-                        log.warn("Ignoring file [%s] with javascript parse error: %s"%(file,e))
+                    if entry_point_module and modules and entry_point_module in modules:
+                        if len(entry_points) == 0:
+                            log.info("Entry point [%s] found under [%s]."%(entry_point_module,my_url))
+                        else:
+                            log.warn("Entry point [%s] also found under [%s], this file will be ignored."%(entry_point_module,my_url))
+                        
+                        entry_points.append(my_url)
+                    
+                with file.open(encoding='utf-8') as fh:
     
-    main_js_urls = []
-
-    if len(base_modules) == 0:
-        log.warn("closure's base.js not found, expect any sort of problems.")
-    else:
-        main_js_urls.append(base_module)
-    
-    main_js_urls.append(PATHS_URL)
-    
-    if entry_point_module and len(entry_points) == 0:
-        log.warn("Entry point [%s] not found, expect any sort of problems.")
-    else:
-        main_js_urls.append(entry_point)
-
-    log.info("Main debug URLs are %s"%main_js_urls)
-
-    def paths_view(request, path):
+                    if not my_url in module_files:
+                        
+                        try:
+                            
+                            javascript = fh.read()
+                            checksum = sha256(javascript.encode('utf-8')).hexdigest()
+                            
+                            modules,requirements,isbase = analyze_modules(javascript)
+                            
+                            if isbase:
+                                
+                                if len(base_modules) == 0:
+                                    log.info("closure's base.js found under [%s]."%my_url)
+                                else:
+                                    log.warn("Additional closure's base.js found under [%s], this file will be ignored."%my_url)
+                                
+                                base_modules.append(my_url)
+                            
+                            if entry_point_module and entry_point_module in modules:
+                                if len(entry_points) == 0:
+                                    log.info("Entry point [%s] found under [%s]."%(entry_point_module,my_url))
+                                else:
+                                    log.warn("Entry point [%s] also found under [%s], this file will be ignored."%(entry_point_module,my_url))
+                                
+                                entry_points.append(my_url)
+                                
+                            module_files[my_url] = {"mtime":mtime,"sha256":checksum,"modules":modules,"requirements":requirements}
+                        
+                        except Exception as e:
+                            log.warn("Ignoring file [%s] with javascript parse error: %s"%(file,e))
+                            module_files[my_url] = {"mtime":mtime,"sha256":checksum}
         
-        with io.StringIO("// This file was autogenerated by django-closure.\n// Please do not edit.\n") as out:
-            
-            for my_url in sorted(module_files):
-                
-                modules,requirements = module_files[my_url]
-                
-                if modules or requirements:
-                    out.write("goog.addDependency(%s,%s,%s)\n",json.dumps(my_url),json.dumps(modules),json.dumps(requirements))
-            
-            response = HttpResponse(out.getvalue(),content_type="application/javascript",charset='utf-8')
-            response["Cache-Control"] = "no-cache"
-            response["Pragma"] = "no-cache"
-            response["Expires"] = "0"
+        main_js_urls = []
+    
+        if len(base_modules) == 0:
+            log.warn("closure's base.js not found, expect any sort of problems.")
+        else:
+            main_js_urls.append(base_modules[0])
+        
+        main_js_urls.append(PATHS_URL)
+        
+        if entry_point_module and len(entry_points) == 0:
+            log.warn("Entry point [%s] not found, expect any sort of problems.")
+        else:
+            main_js_urls.append(entry_points[0])
+    
+        log.info("Main debug URLs are %s"%main_js_urls)
 
-            return response
+        cachestate = { "module_urls": module_files, "main_js_urls": main_js_urls, "base_modules": base_modules, "entry_points": entry_points }
+
+        with open_closure_cache("w") as out:
+            json.dump(cachestate,out)
+
+    def paths_view(request):
+        
+        with lock_closure_config(True):
+    
+            with open_closure_cache("r") as inp:
+                
+                state = json.load(inp)
+                module_files = state["module_urls"]
+                base_modules = state["base_modules"]
+                
+                base_module = base_modules[0]
+                depth = base_module.count("/")-1
+                relpfx = "../" * depth
+                relpfx = relpfx[:-1]
+        
+                with io.StringIO("// This file was autogenerated by django-closure.\n// Please do not edit.\n") as out:
+                    
+                    for my_url in sorted(module_files):
+                        
+                        url_data = module_files[my_url]
+                        
+                        modules = url_data.get("modules")
+                        requirements = url_data.get("requirements")
+                        
+                        if modules or requirements:
+                            out.write("goog.addDependency(%s,%s,%s);\n"%(json.dumps(relpfx+my_url),json.dumps(modules),json.dumps(requirements)))
+                    
+                    response = HttpResponse(out.getvalue(),content_type="application/javascript",charset='utf-8')
+                    response["Cache-Control"] = "no-cache"
+                    response["Pragma"] = "no-cache"
+                    response["Expires"] = "0"
+        
+                    return response
     
     return [ url("^"+PATHS_URL[1:],paths_view) ]
