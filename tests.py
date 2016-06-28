@@ -1,7 +1,7 @@
 from unittest import TestCase
 import logging
 import io
-from closure.tracker import analyse_modules
+from closure.tracker import analyze_modules
 import sys
 import os
 
@@ -23,7 +23,19 @@ def read_test_file(fn):
 class TestTracker(TestCase):
 
     def testSample1(self):
-        modules = analyse_modules(read_test_file("sample1.js"))
+        modules,requirements,isbase = analyze_modules(read_test_file("sample1.js"))
         log.info("modules = [%s]"%modules)
+        log.info("requirements = [%s]"%requirements)
+        log.info("isbase = [%s]"%isbase)
         self.assertEqual(["redundant.stuff","redundant.stuff.Foo"],modules)
+        self.assertEqual(["redundant.stuff.Baz","redundant.stuff.Bar"],requirements)
+        self.assertEqual(False,isbase)
 
+    def testSample2(self):
+        modules,requirements,isbase = analyze_modules(read_test_file("sample2.js"))
+        log.info("modules = [%s]"%modules)
+        log.info("requirements = [%s]"%requirements)
+        log.info("isbase = [%s]"%isbase)
+        self.assertEqual([],modules)
+        self.assertEqual([],requirements)
+        self.assertEqual(True,isbase)
