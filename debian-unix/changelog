@@ -1,0 +1,5 @@
+django-closure (0.1.0-0) any; urgency=medium
+
+  * New-style debian xpkg packaging for clazzes.org
+
+ -- Wolfgang Glas <wolfgang.glas@iteg.at>  Wed, 29 Jun 2016 13:47:58 +0200
