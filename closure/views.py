@@ -93,7 +93,6 @@ def closure_paths():
         old_base_modules = None if oldstate is None else oldstate.get("base_modules")
     
         base_modules = []
-        entry_points = []
         module_files = {}
 
         rootdir,config = load_closure_config()
@@ -105,7 +104,7 @@ def closure_paths():
         
         rootpath = Path(rootdir)
         
-        for libfile in libs + ["node_modules/closure-util/.deps/library/*/closure/goog/base.js"]:
+        for libfile in libs + ["node_modules/closure-util/.deps/library/*/closure/**/*.js"]:
             
             log.info("Scanning javascript files in [%s] under [%s]."%(libfile,rootpath))
             
@@ -132,14 +131,6 @@ def closure_paths():
                         
                         base_modules.append(my_url)
                     
-                    if entry_point_module and modules and entry_point_module in modules:
-                        if len(entry_points) == 0:
-                            log.info("Entry point [%s] found under [%s]."%(entry_point_module,my_url))
-                        else:
-                            log.warn("Entry point [%s] also found under [%s], this file will be ignored."%(entry_point_module,my_url))
-                        
-                        entry_points.append(my_url)
-                    
                 with file.open(encoding='utf-8') as fh:
     
                     if not my_url in module_files:
@@ -160,37 +151,65 @@ def closure_paths():
                                 
                                 base_modules.append(my_url)
                             
-                            if entry_point_module and entry_point_module in modules:
-                                if len(entry_points) == 0:
-                                    log.info("Entry point [%s] found under [%s]."%(entry_point_module,my_url))
-                                else:
-                                    log.warn("Entry point [%s] also found under [%s], this file will be ignored."%(entry_point_module,my_url))
-                                
-                                entry_points.append(my_url)
-                                
                             module_files[my_url] = {"mtime":mtime,"sha256":checksum,"modules":modules,"requirements":requirements}
                         
                         except Exception as e:
                             log.warn("Ignoring file [%s] with javascript parse error: %s"%(file,e))
                             module_files[my_url] = {"mtime":mtime,"sha256":checksum}
         
+        loaded_modules = set()
         main_js_urls = []
-    
+        main_js_urls_set = set()
+
         if len(base_modules) == 0:
             log.warn("closure's base.js not found, expect any sort of problems.")
         else:
+            main_js_urls_set.add(base_modules[0])
             main_js_urls.append(base_modules[0])
-        
-        main_js_urls.append(PATHS_URL)
-        
-        if entry_point_module and len(entry_points) == 0:
-            log.warn("Entry point [%s] not found, expect any sort of problems.")
-        else:
-            main_js_urls.append(entry_points[0])
+            
+        #main_js_urls.append(PATHS_URL)
     
-        log.info("Main debug URLs are %s"%main_js_urls)
+        if entry_point_module:
+            
+            reverse_provide = {}
+            
+            for my_url,module_file in module_files.items():
+                
+                provisions = module_file.get("modules")
+                
+                if provisions:
+                    for module in provisions:
+                        if module in reverse_provide:
+                            log.warn("Module [%s] also found under [%s], this file will be ignored."%(module,my_url))
+                        else:
+                            reverse_provide[module] = my_url
+            
+            def resolve_recursive(module):
+                if not module in loaded_modules:
+                    my_url = reverse_provide.get(module)
+                    if my_url:
+                        
+                        module_file = module_files[my_url]
+                        
+                        requirements = module_file.get("requirements")
+                    
+                        if requirements:
+                            for requirement in requirements:
+                                resolve_recursive(requirement)
 
-        cachestate = { "module_urls": module_files, "main_js_urls": main_js_urls, "base_modules": base_modules, "entry_points": entry_points }
+                        loaded_modules.add(module)
+
+                        if not my_url in main_js_urls_set:
+                            main_js_urls.append(my_url)
+                            main_js_urls_set.add(my_url)
+                        
+            
+            resolve_recursive(entry_point_module)
+    
+        #main_js_urls.reverse()        
+        #log.info("Main debug URLs are %s"%main_js_urls)
+
+        cachestate = { "module_urls": module_files, "main_js_urls": main_js_urls, "base_modules": base_modules }
 
         with open_closure_cache("w") as out:
             json.dump(cachestate,out)
