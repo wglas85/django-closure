@@ -57,6 +57,9 @@ def open_closure_cache(mode):
 
 def get_main_js_urls():
         
+    if not settings.DEBUG:
+        return None
+
     with lock_closure_config(True):
     
         with open_closure_cache("r") as inp:
