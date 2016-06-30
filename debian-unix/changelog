@@ -1,3 +1,9 @@
+django-closure (0.1.0-1) any; urgency=medium
+
+  * Release django-wfs-0.1.0-1 with production mode fixes.
+
+ -- Wolfgang Glas <wolfgang.glas@iteg.at>  Thu, 30 Jun 2016 14:27:41 +0200
+
 django-closure (0.1.0-0) any; urgency=medium
 
   * New-style debian xpkg packaging for clazzes.org
