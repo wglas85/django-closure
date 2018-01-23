@@ -1,4 +1,4 @@
-from unittest import TestCase
+import unittest
 import logging
 import io
 from closure.tracker import analyze_modules
@@ -20,7 +20,7 @@ def read_test_file(fn):
     with io.open(filename) as file:
         return file.read()
         
-class TestTracker(TestCase):
+class TestTracker(unittest.TestCase):
 
     def testSample1(self):
         modules,requirements,isbase = analyze_modules(read_test_file("sample1.js"))
@@ -39,3 +39,6 @@ class TestTracker(TestCase):
         self.assertEqual([],modules)
         self.assertEqual([],requirements)
         self.assertEqual(True,isbase)
+
+if __name__ == '__main__':
+    unittest.main()
